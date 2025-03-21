@@ -54,12 +54,13 @@ def stack_items(items, epsg_code, bbox):
     stack = (
         stackstac.stack(
             items,
-            dtype="int64",
-            rescale=False,
-            fill_value=0,
+            dtype="int64", # Impact Observatory uses uint8, but issues with fill_value of 0 unless using int64 here.
+            rescale=False, # Whether to rescale using scale/offset in band metadata - default is True, but we don't need this.
+            fill_value=0, # Default is nan, but Impact Observatory uses 0 (nan causes issues with uint8).
             epsg=epsg_int,
-            bounds_latlon=bbox,
-            sortby_date=False,
+            bounds_latlon=bbox, # We clip later as well, but setting this here is much quicker!
+            snap_bounds=True, # Default is true - snaps pixel edges to the bounds specified.
+            #resampling="nearest", # Default is nearest, which works for land cover data.
         )
         .assign_coords(
             time=pd.to_datetime([item.properties["start_datetime"] for item in items])
@@ -68,7 +69,6 @@ def stack_items(items, epsg_code, bbox):
         )
         .sortby("time")
     )
-
     return stack
 
 def export_items_from_stack(stack, output_dir, aoi_path):
@@ -83,22 +83,30 @@ def export_items_from_stack(stack, output_dir, aoi_path):
         aoi_geom = [aoi_reprojected.geometry.iloc[0]]
 
         # Clip the raster to the AOI boundary with all_touched=True.
-        clipped = single_item.rio.clip(aoi_geom, all_touched=True)
+        clipped = single_item.rio.clip(aoi_geom, 
+                                       all_touched=True)
+
+        # Avoid any possible NaNs in the final raster for exporting with uint8.
+        clipped = clipped.fillna(0)
+
+        # Set nodata value to 0 to appear in raster metadata.
+        clipped.rio.write_nodata(0, inplace=True)
         
         # Format date for filename (if using time in the filename).
         date_str = pd.to_datetime(time_val).strftime('%Y%m%d')
         
         # Create output filename.
         output_file = os.path.join(output_dir, f"io_land_cover_{date_str}_{i}.tif")
-        
-        # Save to GeoTIFF
+
+        # Save to GeoTIFF.
         clipped.rio.to_raster(
             output_file,
             driver="GTiff",
-            dtype="int32",
-            nodata=0)
+            dtype="uint8")
         
         print(f"Saved {output_file}")
+    
+    return
 
 
 
@@ -110,8 +118,7 @@ def export_mpc_data(catalog, collection, aoi_path):
     stack = stack_items(items, crs, bbox)
     export_items_from_stack(stack, output_dir, aoi_path)
 
-
-
+    return
 
 
 if __name__ == "__main__":
@@ -125,13 +132,13 @@ if __name__ == "__main__":
     # Impact Observatory 9-class Collection
     collection = "io-lulc-annual-v02"
 
-    # Path to AOI GeoJSON
-    #aoi_path = "/Users/sabinenix/Documents/Data/AOIs/Tensas_River_Basin_aoi.geojson"
+    # Set AOI path and output directory depending on the AOI. 
+    # aoi_path = "/Users/sabinenix/Documents/Data/AOIs/Tensas_River_Basin_aoi.geojson"
+    # output_dir = "/Users/sabinenix/Documents/Data/ImpactObservatory/9-class/TensasRiverBasinProject"
     aoi_path = "/Users/sabinenix/Documents/Data/AOIs/Kakadu_National_Park.geojson"
-
-    # Set the output directory for the exported GeoTIFFs.
-    #output_dir = "/Users/sabinenix/Documents/Data/ImpactObservatory/9-class/TensasRiverBasinProject"
     output_dir = "/Users/sabinenix/Documents/Data/ImpactObservatory/9-class/KakaduNationalPark"
+    
+    # Check the output directory exists, make it if it doesn't exist.
     os.makedirs(output_dir, exist_ok=True)
 
     # Export the data
